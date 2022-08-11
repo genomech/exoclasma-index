@@ -8,4 +8,4 @@ TargetDir=""$SCRIPT_DIR"/testoutput/testReference/capture/"$Name""
 
 rm -r "$TargetDir"
 
-exoclasma-index Capture --bed "$BED" --name "$Name" --genomeinfo "$GenomeInfo"
+exoclasma-index Capture --bed "$BED" --name "$Name" --genomeinfo "$GenomeInfo" --description 'Test capture'

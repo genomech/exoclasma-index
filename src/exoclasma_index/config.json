@@ -4,6 +4,6 @@
 		"DpnII": "GATC",
 		"MboI": "GATC",
 		"Sau3AI": "GATC",
-		"Arima": "GA[ACGT]?TC"
+		"Arima": "GA(([ACGT]T)|(TC))"
 	}
 }

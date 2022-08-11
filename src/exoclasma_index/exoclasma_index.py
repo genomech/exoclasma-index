@@ -5,6 +5,7 @@ __bugtracker__ = 'https://github.com/regnveig/exoclasma-index/issues'
 from Bio import SeqIO #
 import argparse
 import bz2
+import datetime
 import gzip
 import json
 import logging
@@ -18,6 +19,8 @@ import tempfile
 # -----=====| LOGGING |=====-----
 
 logging.basicConfig(format='[%(levelname)s] %(message)s', level=logging.INFO)
+
+# -----=====| DEPS |=====-----
 
 def CheckDependency(Name):
 	Shell = subprocess.Popen(Name, shell = True, executable = 'bash', stdout = subprocess.PIPE, stderr = subprocess.PIPE)
@@ -60,20 +63,22 @@ def BashSubprocess(SuccessMessage, Command):
 
 ## ------======| REFSEQ PREP |======------
 
-def CreateGenomeInfo(GenomeName, RestrictionEnzymes):
+def CreateGenomeInfo(GenomeName, RestrictionEnzymes, Description = None):
 	ConfigJson = {
 		'name':               str(GenomeName),
+		'description':        Description,
+		'created':            datetime.datetime.now().isoformat(),
 		'fasta':              f'{GenomeName}.fa',
 		'chrom.sizes':        f'{GenomeName}.chrom.sizes',
 		'samtools.faidx':     f'{GenomeName}.fa.fai',
 		'bed':                f'{GenomeName}.bed',
 		'gatk.dict':          f'{GenomeName}.dict',
-		'juicer.rs':          { Name: os.path.join('juicer.rs', f'{GenomeName}.rs.{Name}.txt') for Name in RestrictionEnzymes.keys() },
+		'juicer.rs':          { Name: { 'map': os.path.join('juicer.rs', f'{GenomeName}.rs.{Name}.txt'), 'site': str(Site) } for Name, Site in RestrictionEnzymes.items() },
 		'capture':            dict()
 	}
 	return ConfigJson
 
-def RefseqPreparation(GenomeName, FastaPath, ParentDir):
+def RefseqPreparation(GenomeName, FastaPath, ParentDir, Description):
 	logging.info(f'{__scriptname__} Reference {__version__}')
 	# Config
 	ConfigPath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
@@ -89,7 +94,7 @@ def RefseqPreparation(GenomeName, FastaPath, ParentDir):
 	Fasta = SeqIO.parse(Open(FullFastaPath), 'fasta')
 	logging.info(f'FASTA opened: {FullFastaPath}')
 	SearchQueries = { Name: re.compile(Sequences) for Name, Sequences in Config['Enzymes'].items() }
-	GenomeInfo = CreateGenomeInfo(GenomeName, Config['Enzymes'])
+	GenomeInfo = CreateGenomeInfo(GenomeName, Config['Enzymes'], Description)
 	# Paths
 	OutputFasta = os.path.join(OutputDir, GenomeInfo['fasta'])
 	ChromSizesPath = os.path.join(OutputDir, GenomeInfo['chrom.sizes'])
@@ -103,7 +108,7 @@ def RefseqPreparation(GenomeName, FastaPath, ParentDir):
 			ChromSizes.write(f'{Contig.name}\t{SeqLength}\n')
 			BedFile.write(f'{Contig.name}\t0\t{SeqLength}\n')
 			for Enzyme, Query in SearchQueries.items():
-				RSPath = os.path.join(OutputDir, GenomeInfo['juicer.rs'][Enzyme])
+				RSPath = os.path.join(OutputDir, GenomeInfo['juicer.rs'][Enzyme]['map'])
 				with open(RSPath, 'a') as FileWrapper:
 					FileWrapper.write(' '.join([Contig.name] + [str(Match.start() + 1) for Match in Query.finditer(Seq)] + [str(SeqLength)]) + '\n')
 			logging.info(f'Contig ready: {Contig.name}')
@@ -121,21 +126,22 @@ def RefseqPreparation(GenomeName, FastaPath, ParentDir):
 
 ## ------======| CAPTURE PREP |======------
 
-def CreateCaptureInfo(CaptureName):
+def CreateCaptureInfo(CaptureName, Description = None):
 	ConfigJson = {
 		'name':         str(CaptureName),
+		'description':  Description,
 		'capture':      os.path.join('capture', CaptureName, f'{CaptureName}.capture.bed'),
 		'not.capture':  os.path.join('capture', CaptureName, f'{CaptureName}.not.capture.bed')
 	}
 	return ConfigJson
 
-def CapturePreparation(CaptureName, InputBED, GenomeInfoJSON):
+def CapturePreparation(CaptureName, InputBED, GenomeInfoJSON, Description):
 	logging.info(f'{__scriptname__} Capture {__version__}')
 	# Info struct
 	GenomeInfoPath = os.path.realpath(GenomeInfoJSON)
 	GenomeInfo = json.load(open(GenomeInfoPath, 'rt'))
 	logging.info(f'Genome info loaded: {GenomeInfoPath}')
-	CaptureInfo = CreateCaptureInfo(CaptureName)
+	CaptureInfo = CreateCaptureInfo(CaptureName, Description)
 	BedAdjustFunction = r"sed -e 's/$/\t\./'"
 	# Paths
 	InputPath = os.path.realpath(InputBED)
@@ -164,7 +170,7 @@ def CapturePreparation(CaptureName, InputBED, GenomeInfoJSON):
 			Purified.write(f'{ParsedLine["Contig"]}\t{ParsedLine["Start"]}\t{ParsedLine["End"]}\n')
 	logging.info('BED file decompressed and purified')
 	CommandFilterAndSort = ['set', '-o', 'pipefail;', 'bedtools', 'sort', '-faidx', ArmorDoubleQuotes(GenomeInfoBed), '-i', ArmorDoubleQuotes(TempPurified), '|', BedAdjustFunction, '>', ArmorDoubleQuotes(CapturePath)]
-	CommandNotCapture = ['bedtools', 'subtract', '-a', ArmorDoubleQuotes(GenomeInfoBed), '-b', ArmorDoubleQuotes(CapturePath), '|', BedAdjustFunction, '>', ArmorDoubleQuotes(NotCapturePath)]
+	CommandNotCapture = ['set', '-o', 'pipefail;', 'bedtools', 'subtract', '-a', ArmorDoubleQuotes(GenomeInfoBed), '-b', ArmorDoubleQuotes(CapturePath), '|', BedAdjustFunction, '>', ArmorDoubleQuotes(NotCapturePath)]
 	BashSubprocess('Capture sorted and written', ' '.join(CommandFilterAndSort))
 	BashSubprocess('NotCapture written', ' '.join(CommandNotCapture))
 	GenomeInfo['capture'][CaptureName] = CaptureInfo
@@ -185,11 +191,13 @@ def CreateParser():
 	PrepareReferenceParser.add_argument('-f', '--fasta', required = True, type = str, help = f'Raw FASTA file. May be gzipped or bzipped')
 	PrepareReferenceParser.add_argument('-n', '--name', required = True, type = str, help = f'Name of reference assembly. Will be used as folder name and files prefix')
 	PrepareReferenceParser.add_argument('-p', '--parent', required = True, type = str, help = f'Parent dir where reference folder will be created')
+	PrepareReferenceParser.add_argument('-d', '--description', default = None, help = f'Reference description. Optional.')
 	# PrepareCapture
 	PrepareCaptureParser = Subparsers.add_parser('Capture', help = f'Prepare Capture BED. Filter and sort Capture BED, create NotCapture and update GenomeInfo JSON files')
 	PrepareCaptureParser.add_argument('-b', '--bed', required = True, type = str, help = f'Raw BED file')
 	PrepareCaptureParser.add_argument('-n', '--name', required = True, type = str, help = f'Name of capture. Will be used as folder name and files prefix')
 	PrepareCaptureParser.add_argument('-g', '--genomeinfo', required = True, type = str, help = f'GenomeInfo JSON file. See "exoclasma-index Reference --help" for details')
+	PrepareCaptureParser.add_argument('-d', '--description', default = None, help = f'Capture description. Optional.')
 	return Parser
 
 def main():
@@ -198,10 +206,12 @@ def main():
 	Namespace = Parser.parse_args(sys.argv[1:])
 	if Namespace.command == "Reference":
 		FastaPath, GenomeName, ParentDir = os.path.abspath(Namespace.fasta), Namespace.name, os.path.abspath(Namespace.parent)
-		RefseqPreparation(FastaPath = FastaPath, GenomeName = GenomeName, ParentDir = ParentDir)
+		Description = None if Namespace.description is None else str(Namespace.description)
+		RefseqPreparation(FastaPath = FastaPath, GenomeName = GenomeName, ParentDir = ParentDir, Description = Description)
 	elif Namespace.command == "Capture":
 		CaptureName, InputBED, GenomeInfoJSON = Namespace.name, os.path.abspath(Namespace.bed), os.path.abspath(Namespace.genomeinfo)
-		CapturePreparation(CaptureName = CaptureName, InputBED = InputBED, GenomeInfoJSON = GenomeInfoJSON)
+		Description = None if Namespace.description is None else str(Namespace.description)
+		CapturePreparation(CaptureName = CaptureName, InputBED = InputBED, GenomeInfoJSON = GenomeInfoJSON, Description = Description)
 	else: Parser.print_help()
 
 if __name__ == '__main__': main()
