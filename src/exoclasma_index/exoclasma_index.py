@@ -1,10 +1,11 @@
 __scriptname__ = 'exoclasma-index'
-__version__ = '0.9.0'
+__version__ = '0.9.1'
 __bugtracker__ = 'https://github.com/regnveig/exoclasma-index/issues'
 
 from Bio import SeqIO #
 import argparse
 import bz2
+import datetime
 import gzip
 import json
 import logging
@@ -19,6 +20,8 @@ import tempfile
 
 logging.basicConfig(format='[%(levelname)s] %(message)s', level=logging.INFO)
 
+# -----=====| DEPS |=====-----
+
 def CheckDependency(Name):
 	Shell = subprocess.Popen(Name, shell = True, executable = 'bash', stdout = subprocess.PIPE, stderr = subprocess.PIPE)
 	Stdout, _ = Shell.communicate()
@@ -29,11 +32,11 @@ def CheckDependency(Name):
 		logging.error(f'Dependency "{Name}" is not executable!')
 		exit(1)
 
-def CheckDependencies():
+def CheckDependencies(CheckGatk = True):
 	CheckDependency('samtools')
 	CheckDependency('bwa')
 	CheckDependency('bedtools')
-	CheckDependency('gatk')
+	if CheckGatk: CheckDependency('gatk')
 
 
 ## ------======| MISC |======------
@@ -60,20 +63,22 @@ def BashSubprocess(SuccessMessage, Command):
 
 ## ------======| REFSEQ PREP |======------
 
-def CreateGenomeInfo(GenomeName, RestrictionEnzymes):
+def CreateGenomeInfo(GenomeName, RestrictionEnzymes, Description = None, BuildGatkIndex = True):
 	ConfigJson = {
 		'name':               str(GenomeName),
+		'description':        Description,
+		'created':            datetime.datetime.now().isoformat(),
 		'fasta':              f'{GenomeName}.fa',
 		'chrom.sizes':        f'{GenomeName}.chrom.sizes',
 		'samtools.faidx':     f'{GenomeName}.fa.fai',
 		'bed':                f'{GenomeName}.bed',
-		'gatk.dict':          f'{GenomeName}.dict',
-		'juicer.rs':          { Name: os.path.join('juicer.rs', f'{GenomeName}.rs.{Name}.txt') for Name in RestrictionEnzymes.keys() },
+		'gatk.dict':          f'{GenomeName}.dict' if BuildGatkIndex else None,
+		'juicer.rs':          { Name: { 'map': os.path.join('juicer.rs', f'{GenomeName}.rs.{Name}.txt'), 'site': str(Site) } for Name, Site in RestrictionEnzymes.items() },
 		'capture':            dict()
 	}
 	return ConfigJson
 
-def RefseqPreparation(GenomeName, FastaPath, ParentDir):
+def RefseqPreparation(GenomeName, FastaPath, ParentDir, Description, BuildGatkIndex):
 	logging.info(f'{__scriptname__} Reference {__version__}')
 	# Config
 	ConfigPath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
@@ -89,7 +94,7 @@ def RefseqPreparation(GenomeName, FastaPath, ParentDir):
 	Fasta = SeqIO.parse(Open(FullFastaPath), 'fasta')
 	logging.info(f'FASTA opened: {FullFastaPath}')
 	SearchQueries = { Name: re.compile(Sequences) for Name, Sequences in Config['Enzymes'].items() }
-	GenomeInfo = CreateGenomeInfo(GenomeName, Config['Enzymes'])
+	GenomeInfo = CreateGenomeInfo(GenomeName, Config['Enzymes'], Description, BuildGatkIndex)
 	# Paths
 	OutputFasta = os.path.join(OutputDir, GenomeInfo['fasta'])
 	ChromSizesPath = os.path.join(OutputDir, GenomeInfo['chrom.sizes'])
@@ -103,17 +108,19 @@ def RefseqPreparation(GenomeName, FastaPath, ParentDir):
 			ChromSizes.write(f'{Contig.name}\t{SeqLength}\n')
 			BedFile.write(f'{Contig.name}\t0\t{SeqLength}\n')
 			for Enzyme, Query in SearchQueries.items():
-				RSPath = os.path.join(OutputDir, GenomeInfo['juicer.rs'][Enzyme])
+				RSPath = os.path.join(OutputDir, GenomeInfo['juicer.rs'][Enzyme]['map'])
 				with open(RSPath, 'a') as FileWrapper:
 					FileWrapper.write(' '.join([Contig.name] + [str(Match.start() + 1) for Match in Query.finditer(Seq)] + [str(SeqLength)]) + '\n')
 			logging.info(f'Contig ready: {Contig.name}')
 	logging.info('Fasta, chrom sizes, bed file, and restriction sites are ready')
+	GenomeInfo['chrom.sizes.dict'] = pandas.read_csv(BedPath, sep = '\t', header = None).set_index(0)[2].to_dict()
 	CommandSamtoolsIndex = ['samtools', 'faidx',  ArmorDoubleQuotes(OutputFasta)]
 	CommandBwaIndex = ['bwa', 'index',  ArmorDoubleQuotes(OutputFasta)]
-	CommandGATKIndex = ['gatk', 'CreateSequenceDictionary', '--VERBOSITY', 'ERROR', '-R',  ArmorDoubleQuotes(OutputFasta)]
 	BashSubprocess('SAMtools faidx ready', ' '.join(CommandSamtoolsIndex))
 	BashSubprocess('BWA index ready', ' '.join(CommandBwaIndex))
-	BashSubprocess('GATK dictionary ready', ' '.join(CommandGATKIndex))
+	if BuildGatkIndex:
+		CommandGATKIndex = ['gatk', 'CreateSequenceDictionary', '--VERBOSITY', 'ERROR', '-R',  ArmorDoubleQuotes(OutputFasta)]
+		BashSubprocess('GATK dictionary ready', ' '.join(CommandGATKIndex))
 	GenomeInfoJson = os.path.join(OutputDir, f'{GenomeName}.info.json')
 	json.dump(GenomeInfo, open(GenomeInfoJson, 'wt'), indent = 4, ensure_ascii = False)
 	logging.info('Job finished')
@@ -121,21 +128,23 @@ def RefseqPreparation(GenomeName, FastaPath, ParentDir):
 
 ## ------======| CAPTURE PREP |======------
 
-def CreateCaptureInfo(CaptureName):
+def CreateCaptureInfo(CaptureName, Description = None):
 	ConfigJson = {
 		'name':         str(CaptureName),
+		'description':  Description,
+		'created':      datetime.datetime.now().isoformat(),
 		'capture':      os.path.join('capture', CaptureName, f'{CaptureName}.capture.bed'),
 		'not.capture':  os.path.join('capture', CaptureName, f'{CaptureName}.not.capture.bed')
 	}
 	return ConfigJson
 
-def CapturePreparation(CaptureName, InputBED, GenomeInfoJSON):
+def CapturePreparation(CaptureName, InputBED, GenomeInfoJSON, Description):
 	logging.info(f'{__scriptname__} Capture {__version__}')
 	# Info struct
 	GenomeInfoPath = os.path.realpath(GenomeInfoJSON)
 	GenomeInfo = json.load(open(GenomeInfoPath, 'rt'))
 	logging.info(f'Genome info loaded: {GenomeInfoPath}')
-	CaptureInfo = CreateCaptureInfo(CaptureName)
+	CaptureInfo = CreateCaptureInfo(CaptureName, Description)
 	BedAdjustFunction = r"sed -e 's/$/\t\./'"
 	# Paths
 	InputPath = os.path.realpath(InputBED)
@@ -146,7 +155,7 @@ def CapturePreparation(CaptureName, InputBED, GenomeInfoJSON):
 	CapturePath = os.path.join(GenomeDir, CaptureInfo['capture'])
 	NotCapturePath = os.path.join(GenomeDir, CaptureInfo['not.capture'])
 	TempPurified = os.path.join(CaptureDir, '.temp.decompressed.bed')
-	ChromSizes = pandas.read_csv(GenomeInfoBed, sep = '\t', header = None).set_index(0)[2].to_dict()
+	ChromSizes = GenomeInfo['chrom.sizes.dict']
 	# Make dirs
 	try:
 		os.mkdir(CaptureDir)
@@ -164,7 +173,7 @@ def CapturePreparation(CaptureName, InputBED, GenomeInfoJSON):
 			Purified.write(f'{ParsedLine["Contig"]}\t{ParsedLine["Start"]}\t{ParsedLine["End"]}\n')
 	logging.info('BED file decompressed and purified')
 	CommandFilterAndSort = ['set', '-o', 'pipefail;', 'bedtools', 'sort', '-faidx', ArmorDoubleQuotes(GenomeInfoBed), '-i', ArmorDoubleQuotes(TempPurified), '|', BedAdjustFunction, '>', ArmorDoubleQuotes(CapturePath)]
-	CommandNotCapture = ['bedtools', 'subtract', '-a', ArmorDoubleQuotes(GenomeInfoBed), '-b', ArmorDoubleQuotes(CapturePath), '|', BedAdjustFunction, '>', ArmorDoubleQuotes(NotCapturePath)]
+	CommandNotCapture = ['set', '-o', 'pipefail;', 'bedtools', 'subtract', '-a', ArmorDoubleQuotes(GenomeInfoBed), '-b', ArmorDoubleQuotes(CapturePath), '|', BedAdjustFunction, '>', ArmorDoubleQuotes(NotCapturePath)]
 	BashSubprocess('Capture sorted and written', ' '.join(CommandFilterAndSort))
 	BashSubprocess('NotCapture written', ' '.join(CommandNotCapture))
 	GenomeInfo['capture'][CaptureName] = CaptureInfo
@@ -185,23 +194,29 @@ def CreateParser():
 	PrepareReferenceParser.add_argument('-f', '--fasta', required = True, type = str, help = f'Raw FASTA file. May be gzipped or bzipped')
 	PrepareReferenceParser.add_argument('-n', '--name', required = True, type = str, help = f'Name of reference assembly. Will be used as folder name and files prefix')
 	PrepareReferenceParser.add_argument('-p', '--parent', required = True, type = str, help = f'Parent dir where reference folder will be created')
+	PrepareReferenceParser.add_argument('-d', '--description', default = None, help = f'Reference description. Optional.')
+	PrepareReferenceParser.add_argument('--no-gatk', action = 'store_true', help = f'Do not build GATK dictionary')
 	# PrepareCapture
 	PrepareCaptureParser = Subparsers.add_parser('Capture', help = f'Prepare Capture BED. Filter and sort Capture BED, create NotCapture and update GenomeInfo JSON files')
 	PrepareCaptureParser.add_argument('-b', '--bed', required = True, type = str, help = f'Raw BED file')
 	PrepareCaptureParser.add_argument('-n', '--name', required = True, type = str, help = f'Name of capture. Will be used as folder name and files prefix')
 	PrepareCaptureParser.add_argument('-g', '--genomeinfo', required = True, type = str, help = f'GenomeInfo JSON file. See "exoclasma-index Reference --help" for details')
+	PrepareCaptureParser.add_argument('-d', '--description', default = None, help = f'Capture description. Optional.')
 	return Parser
 
 def main():
-	CheckDependencies()
 	Parser = CreateParser()
 	Namespace = Parser.parse_args(sys.argv[1:])
 	if Namespace.command == "Reference":
+		CheckDependencies(CheckGatk = (not Namespace.no_gatk))
 		FastaPath, GenomeName, ParentDir = os.path.abspath(Namespace.fasta), Namespace.name, os.path.abspath(Namespace.parent)
-		RefseqPreparation(FastaPath = FastaPath, GenomeName = GenomeName, ParentDir = ParentDir)
+		Description = None if Namespace.description is None else str(Namespace.description)
+		RefseqPreparation(FastaPath = FastaPath, GenomeName = GenomeName, ParentDir = ParentDir, Description = Description, BuildGatkIndex = (not Namespace.no_gatk))
 	elif Namespace.command == "Capture":
+		CheckDependencies(CheckGatk = False)
 		CaptureName, InputBED, GenomeInfoJSON = Namespace.name, os.path.abspath(Namespace.bed), os.path.abspath(Namespace.genomeinfo)
-		CapturePreparation(CaptureName = CaptureName, InputBED = InputBED, GenomeInfoJSON = GenomeInfoJSON)
+		Description = None if Namespace.description is None else str(Namespace.description)
+		CapturePreparation(CaptureName = CaptureName, InputBED = InputBED, GenomeInfoJSON = GenomeInfoJSON, Description = Description)
 	else: Parser.print_help()
 
 if __name__ == '__main__': main()

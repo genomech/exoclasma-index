@@ -8,4 +8,4 @@ TargetDir=""$Parent"/"$Name""
 
 rm -r "$TargetDir"
 
-exoclasma-index Reference --fasta "$Fasta" --name "$Name" --parent "$Parent"
+exoclasma-index Reference --fasta "$Fasta" --name "$Name" --parent "$Parent" --description 'Test reference' --no-gatk
