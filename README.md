@@ -6,7 +6,7 @@ exoclasma-index is a tools for reference sequence and capture intervals preparat
 
 Features:
 
-- Prepare FASTA reference sequence (purge names, uncompress, etc.)
+- Prepare FASTA reference sequence (purge names, uncompress, sort and filter contigs, etc.)
 - Create restriction sites for [Juicer](https://github.com/aidenlab/juicer) as described at `config.json`.
 For now available restrictases include:
 	- HindIII
@@ -14,6 +14,7 @@ For now available restrictases include:
 	- MboI
 	- Sau3AI
 	- Arima
+- Add your own restriction sites.
 - Create indices for:
 	- SAMtools (`samtools faidx`)
 	- BWA (`bwa index`)
@@ -52,7 +53,14 @@ GATK should be installed into Miniconda environment [as described by the develop
 exoclasma-index Reference -f ${FastaFile} -n ${ReferenceName} -p ${ParentDirectory}
 ```
 
-Optional:  `-d ${ReferenceDescription}`, `--no-gatk`
+Optional:  `-d ${ReferenceDescription}`, `--no-gatk`, `-c ${Contigs}`.
+
+Contigs may be filtered or sorted with `-c` option.
+Full list of FASTA contigs can be displayed via
+
+```bash
+exoclasma-index Contigs -f ${FastaFile}
+```
 
 ### Capture preparation
 
@@ -63,3 +71,13 @@ exoclasma-index Capture -b ${BedFile} -n ${CaptureName} -g ${GenomeInfoJSON}
 `GenomeInfoJSON` is a JSON file which created via `exoclasma-index Reference`.
 
 Optional:  `-d ${ReferenceDescription}`
+
+### Restriction sites manipulation
+
+Restriction sites can be displayed, added, or removed:
+
+```bash
+exoclasma-index RestrictionSites
+exoclasma-index AddRS -n ${RestrictionSiteName} -r ''${RestrictionSiteRegExp}''
+exoclasma-index RemoveRS -n ${RestrictionSiteName}
+```

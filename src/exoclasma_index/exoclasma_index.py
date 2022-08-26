@@ -1,5 +1,5 @@
 __scriptname__ = 'exoclasma-index'
-__version__ = '0.9.4'
+__version__ = '0.9.5'
 __bugtracker__ = 'https://github.com/regnveig/exoclasma-index/issues'
 
 from Bio import SeqIO #
@@ -115,10 +115,12 @@ def RefseqPreparation(GenomeName, FastaPath, ParentDir, Description, BuildGatkIn
 	else:
 		Contigs = {}
 		for Contig in Fasta: Contigs[Contig.name] = Contig
+	# TODO Low memory issue
 	with open(OutputFasta, 'w') as NewFasta, open(ChromSizesPath, 'w') as ChromSizes, open(BedPath, 'w') as BedFile:
 		for Contig in Contigs.values():
 			Contig.name = re.sub('[^\w\.]', '_', Contig.name)
 			Seq = Contig.seq.__str__()
+			ReverseComplementSeq = Contig.seq.reverse_complement().__str__()
 			SeqLength = len(Seq)
 			SeqIO.write([Contig], NewFasta, 'fasta')
 			ChromSizes.write(f'{Contig.name}\t{SeqLength}\n')
@@ -126,7 +128,11 @@ def RefseqPreparation(GenomeName, FastaPath, ParentDir, Description, BuildGatkIn
 			for Enzyme, Query in SearchQueries.items():
 				RSPath = os.path.join(OutputDir, GenomeInfo['juicer.rs'][Enzyme]['map'])
 				with open(RSPath, 'a') as FileWrapper:
-					FileWrapper.write(' '.join([Contig.name] + [str(Match.start() + 1) for Match in Query.finditer(Seq)] + [str(SeqLength)]) + '\n')
+					Sites = [(Match.start() + 1) for Match in Query.finditer(Seq)] + [(SeqLength - Match.end() + 1) for Match in Query.finditer(ReverseComplementSeq)]
+					Sites = sorted(list(set(Sites)))
+					FileWrapper.write(' '.join([Contig.name] + [str(Item) for Item in Sites] + [str(SeqLength)]) + '\n')
+			del Seq
+			del ReverseComplementSeq
 			logging.info(f'Contig ready: {Contig.name}')
 	logging.info('Fasta, chrom sizes, bed file, and restriction sites are ready')
 	GenomeInfo['chrom.sizes.dict'] = pandas.read_csv(BedPath, sep = '\t', header = None).set_index(0)[2].to_dict()
@@ -258,7 +264,7 @@ def CreateParser():
 	PrepareReferenceParser.add_argument('-f', '--fasta', required = True, type = str, help = f'Raw FASTA file. May be gzipped or bzipped')
 	PrepareReferenceParser.add_argument('-n', '--name', required = True, type = str, help = f'Name of reference assembly. Will be used as folder name and files prefix')
 	PrepareReferenceParser.add_argument('-p', '--parent', required = True, type = str, help = f'Parent dir where reference folder will be created')
-	PrepareReferenceParser.add_argument('-c', '--contigs', required = True, type = str, help = f'List of contigs to keep. Plain JSON array')
+	PrepareReferenceParser.add_argument('-c', '--contigs', default = None, help = f'List of contigs to keep. Plain JSON array')
 	PrepareReferenceParser.add_argument('-d', '--description', default = None, help = f'Reference description. Optional')
 	PrepareReferenceParser.add_argument('-g', '--no-gatk', action = 'store_true', help = f'Do not build GATK dictionary')
 	# PrepareCapture
@@ -266,7 +272,7 @@ def CreateParser():
 	PrepareCaptureParser.add_argument('-b', '--bed', required = True, type = str, help = f'Raw BED file')
 	PrepareCaptureParser.add_argument('-n', '--name', required = True, type = str, help = f'Name of capture. Will be used as folder name and files prefix')
 	PrepareCaptureParser.add_argument('-g', '--genomeinfo', required = True, type = str, help = f'GenomeInfo JSON file. See "exoclasma-index Reference --help" for details')
-	PrepareCaptureParser.add_argument('-d', '--description', default = None, help = f'Capture description. Optional.')
+	PrepareCaptureParser.add_argument('-d', '--description', default = None, type = str, help = f'Capture description. Optional.')
 	# ListContigs
 	ListContigsParser = Subparsers.add_parser('Contigs', help = f'List FASTA contigs')
 	ListContigsParser.add_argument('-f', '--fasta', required = True, type = str, help = f'Raw FASTA file. May be gzipped or bzipped')
@@ -288,7 +294,7 @@ def main():
 	if Namespace.command == "Reference":
 		CheckDependencies(CheckGatk = (not Namespace.no_gatk))
 		FastaPath, GenomeName, ParentDir = os.path.abspath(Namespace.fasta), Namespace.name, os.path.abspath(Namespace.parent)
-		ContigJSON = str(Namespace.contigs)
+		ContigJSON = None if Namespace.contigs is None else str(Namespace.contigs)
 		Description = None if Namespace.description is None else str(Namespace.description)
 		RefseqPreparation(FastaPath = FastaPath, GenomeName = GenomeName, ParentDir = ParentDir, Description = Description, BuildGatkIndex = (not Namespace.no_gatk), ContigJSON = ContigJSON)
 	elif Namespace.command == "Capture":
