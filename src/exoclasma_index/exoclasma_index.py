@@ -195,7 +195,7 @@ def CreateParser():
 	PrepareReferenceParser.add_argument('-n', '--name', required = True, type = str, help = f'Name of reference assembly. Will be used as folder name and files prefix')
 	PrepareReferenceParser.add_argument('-p', '--parent', required = True, type = str, help = f'Parent dir where reference folder will be created')
 	PrepareReferenceParser.add_argument('-d', '--description', default = None, help = f'Reference description. Optional.')
-	PrepareReferenceParser.add_argument('--no-gatk', action = 'store_true', help = f'Do not build GATK dictionary')
+	PrepareReferenceParser.add_argument('-g', '--no-gatk', action = 'store_true', help = f'Do not build GATK dictionary')
 	# PrepareCapture
 	PrepareCaptureParser = Subparsers.add_parser('Capture', help = f'Prepare Capture BED. Filter and sort Capture BED, create NotCapture and update GenomeInfo JSON files')
 	PrepareCaptureParser.add_argument('-b', '--bed', required = True, type = str, help = f'Raw BED file')
