@@ -5,4 +5,4 @@ Fasta=$( realpath ""$SCRIPT_DIR"/testdata/TestGenome_sacCer3.fa.gz"; )
 
 rm -r "$TargetDir"
 
-exoclasma-index List --fasta "$Fasta"
+exoclasma-index RestrictionSites
