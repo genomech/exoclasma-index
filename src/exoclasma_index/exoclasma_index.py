@@ -1,5 +1,5 @@
 __scriptname__ = 'exoclasma-index'
-__version__ = '0.9.1'
+__version__ = '0.9.5'
 __bugtracker__ = 'https://github.com/regnveig/exoclasma-index/issues'
 
 from Bio import SeqIO #
@@ -78,11 +78,12 @@ def CreateGenomeInfo(GenomeName, RestrictionEnzymes, Description = None, BuildGa
 	}
 	return ConfigJson
 
-def RefseqPreparation(GenomeName, FastaPath, ParentDir, Description, BuildGatkIndex):
+def RefseqPreparation(GenomeName, FastaPath, ParentDir, Description, BuildGatkIndex, ContigJSON):
 	logging.info(f'{__scriptname__} Reference {__version__}')
 	# Config
 	ConfigPath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
 	Config = json.load(open(ConfigPath, 'rt'))
+	if ContigJSON is not None: ContigList = json.loads(ContigJSON)
 	# Output Dir
 	OutputDir = os.path.realpath(os.path.join(ParentDir, GenomeName))
 	RSDir = os.path.realpath(os.path.join(OutputDir, 'juicer.rs'))
@@ -99,10 +100,27 @@ def RefseqPreparation(GenomeName, FastaPath, ParentDir, Description, BuildGatkIn
 	OutputFasta = os.path.join(OutputDir, GenomeInfo['fasta'])
 	ChromSizesPath = os.path.join(OutputDir, GenomeInfo['chrom.sizes'])
 	BedPath = os.path.join(OutputDir, GenomeInfo['bed'])
-	with open(OutputFasta, 'w') as NewFasta, open(ChromSizesPath, 'w') as ChromSizes, open(BedPath, 'w') as BedFile:
+	# Sort & filter
+	if ContigJSON is not None:
+		if len(set(ContigList)) < len(ContigList):
+			logging.error(f'Some contigs from list are duplicated')
+			exit(1)
+		Contigs = { contig: None for contig in ContigList}
 		for Contig in Fasta:
+			if Contig.name in Contigs: Contigs[Contig.name] = Contig
+		ContigsNotExist = [Item for Item in Contigs if (Contigs[Item] is None)]
+		if ContigsNotExist:
+			logging.error(f'Some contigs from list not exist: {json.dumps(ContigsNotExist)}')
+			exit(1)
+	else:
+		Contigs = {}
+		for Contig in Fasta: Contigs[Contig.name] = Contig
+	# TODO Low memory issue
+	with open(OutputFasta, 'w') as NewFasta, open(ChromSizesPath, 'w') as ChromSizes, open(BedPath, 'w') as BedFile:
+		for Contig in Contigs.values():
 			Contig.name = re.sub('[^\w\.]', '_', Contig.name)
 			Seq = Contig.seq.__str__()
+			ReverseComplementSeq = Contig.seq.reverse_complement().__str__()
 			SeqLength = len(Seq)
 			SeqIO.write([Contig], NewFasta, 'fasta')
 			ChromSizes.write(f'{Contig.name}\t{SeqLength}\n')
@@ -110,7 +128,11 @@ def RefseqPreparation(GenomeName, FastaPath, ParentDir, Description, BuildGatkIn
 			for Enzyme, Query in SearchQueries.items():
 				RSPath = os.path.join(OutputDir, GenomeInfo['juicer.rs'][Enzyme]['map'])
 				with open(RSPath, 'a') as FileWrapper:
-					FileWrapper.write(' '.join([Contig.name] + [str(Match.start() + 1) for Match in Query.finditer(Seq)] + [str(SeqLength)]) + '\n')
+					Sites = [(Match.start() + 1) for Match in Query.finditer(Seq)] + [(SeqLength - Match.end() + 1) for Match in Query.finditer(ReverseComplementSeq)]
+					Sites = sorted(list(set(Sites)))
+					FileWrapper.write(' '.join([Contig.name] + [str(Item) for Item in Sites] + [str(SeqLength)]) + '\n')
+			del Seq
+			del ReverseComplementSeq
 			logging.info(f'Contig ready: {Contig.name}')
 	logging.info('Fasta, chrom sizes, bed file, and restriction sites are ready')
 	GenomeInfo['chrom.sizes.dict'] = pandas.read_csv(BedPath, sep = '\t', header = None).set_index(0)[2].to_dict()
@@ -182,6 +204,54 @@ def CapturePreparation(CaptureName, InputBED, GenomeInfoJSON, Description):
 	os.remove(TempPurified)
 	logging.info('Job finished')
 
+def ListContigs(FastaPath):
+	logging.info(f'{__scriptname__} Contigs {__version__}')
+	FullFastaPath = os.path.realpath(FastaPath)
+	Fasta = SeqIO.parse(Open(FullFastaPath), 'fasta')
+	logging.info(f'FASTA opened: {FullFastaPath}')
+	Result = list()
+	for Contig in Fasta: Result.append(str(Contig.id))
+	logging.info(f'Contigs: {json.dumps(Result)}')
+
+def ListRS():
+	logging.info(f'{__scriptname__} RestrictionSites {__version__}')
+	# Config
+	ConfigPath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+	Config = json.load(open(ConfigPath, 'rt'))
+	logging.info(f'Restriction sites: {json.dumps(Config["Enzymes"])}')
+
+def RemoveRS(Name):
+	logging.info(f'{__scriptname__} RemoveRS {__version__}')
+	# Config
+	ConfigPath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+	Config = json.load(open(ConfigPath, 'rt'))
+	if Name not in Config['Enzymes']:
+		logging.error(f'Restriction site not found: "{Name}"')
+		exit(1)
+	else:
+		del Config['Enzymes'][Name]
+		json.dump(Config, open(ConfigPath, 'wt'))
+		logging.info(f'Config saved')
+
+def AddRS(Name, RegExp):
+	logging.info(f'{__scriptname__} AddRS {__version__}')
+	# Config
+	ConfigPath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+	Config = json.load(open(ConfigPath, 'rt'))
+	if Name in Config['Enzymes']:
+		logging.error(f'Restriction site exists: "{Name}"')
+		exit(1)
+	else:
+		try:
+			re.compile(RegExp)
+		except re.error:
+			logging.error(f'RegExp is not valid: {RegExp}')
+			exit(1)
+		# TODO Check name?
+		Config['Enzymes'][Name] = RegExp
+		json.dump(Config, open(ConfigPath, 'wt'))
+		logging.info(f'Config saved')
+
 def CreateParser():
 	Parser = argparse.ArgumentParser(
 		formatter_class = argparse.RawDescriptionHelpFormatter,
@@ -190,18 +260,32 @@ def CreateParser():
 	Parser.add_argument('-v', '--version', action = 'version', version = __version__)
 	Subparsers = Parser.add_subparsers(title = 'Commands', dest = 'command')
 	# PrepareReference
-	PrepareReferenceParser = Subparsers.add_parser('Reference', help = f'Prepare Reference Sequence. Create genomic indices for several tools, restriction sites, and GenomeInfo JSON file.')
+	PrepareReferenceParser = Subparsers.add_parser('Reference', help = f'Prepare Reference Sequence. Create genomic indices for several tools, restriction sites, and GenomeInfo JSON file')
 	PrepareReferenceParser.add_argument('-f', '--fasta', required = True, type = str, help = f'Raw FASTA file. May be gzipped or bzipped')
 	PrepareReferenceParser.add_argument('-n', '--name', required = True, type = str, help = f'Name of reference assembly. Will be used as folder name and files prefix')
 	PrepareReferenceParser.add_argument('-p', '--parent', required = True, type = str, help = f'Parent dir where reference folder will be created')
-	PrepareReferenceParser.add_argument('-d', '--description', default = None, help = f'Reference description. Optional.')
-	PrepareReferenceParser.add_argument('--no-gatk', action = 'store_true', help = f'Do not build GATK dictionary')
+	PrepareReferenceParser.add_argument('-c', '--contigs', default = None, help = f'List of contigs to keep. Plain JSON array')
+	PrepareReferenceParser.add_argument('-d', '--description', default = None, help = f'Reference description. Optional')
+	PrepareReferenceParser.add_argument('-g', '--no-gatk', action = 'store_true', help = f'Do not build GATK dictionary')
 	# PrepareCapture
 	PrepareCaptureParser = Subparsers.add_parser('Capture', help = f'Prepare Capture BED. Filter and sort Capture BED, create NotCapture and update GenomeInfo JSON files')
 	PrepareCaptureParser.add_argument('-b', '--bed', required = True, type = str, help = f'Raw BED file')
 	PrepareCaptureParser.add_argument('-n', '--name', required = True, type = str, help = f'Name of capture. Will be used as folder name and files prefix')
 	PrepareCaptureParser.add_argument('-g', '--genomeinfo', required = True, type = str, help = f'GenomeInfo JSON file. See "exoclasma-index Reference --help" for details')
-	PrepareCaptureParser.add_argument('-d', '--description', default = None, help = f'Capture description. Optional.')
+	PrepareCaptureParser.add_argument('-d', '--description', default = None, type = str, help = f'Capture description. Optional.')
+	# ListContigs
+	ListContigsParser = Subparsers.add_parser('Contigs', help = f'List FASTA contigs')
+	ListContigsParser.add_argument('-f', '--fasta', required = True, type = str, help = f'Raw FASTA file. May be gzipped or bzipped')
+	# ListRS
+	ListRSParser = Subparsers.add_parser('RestrictionSites', help = f'List restriction sites')
+	# AddRS
+	AddRSParser = Subparsers.add_parser('AddRS', help = f'Add restriction site')
+	AddRSParser.add_argument('-n', '--name', required = True, type = str, help = f'Restriction site name')
+	AddRSParser.add_argument('-r', '--regexp', required = True, type = str, help = f'Restriction site RegExp')
+	# RemoveRS
+	RemoveRSParser = Subparsers.add_parser('RemoveRS', help = f'Remove restriction site')
+	RemoveRSParser.add_argument('-n', '--name', required = True, type = str, help = f'Restriction site name')
+
 	return Parser
 
 def main():
@@ -210,13 +294,23 @@ def main():
 	if Namespace.command == "Reference":
 		CheckDependencies(CheckGatk = (not Namespace.no_gatk))
 		FastaPath, GenomeName, ParentDir = os.path.abspath(Namespace.fasta), Namespace.name, os.path.abspath(Namespace.parent)
+		ContigJSON = None if Namespace.contigs is None else str(Namespace.contigs)
 		Description = None if Namespace.description is None else str(Namespace.description)
-		RefseqPreparation(FastaPath = FastaPath, GenomeName = GenomeName, ParentDir = ParentDir, Description = Description, BuildGatkIndex = (not Namespace.no_gatk))
+		RefseqPreparation(FastaPath = FastaPath, GenomeName = GenomeName, ParentDir = ParentDir, Description = Description, BuildGatkIndex = (not Namespace.no_gatk), ContigJSON = ContigJSON)
 	elif Namespace.command == "Capture":
 		CheckDependencies(CheckGatk = False)
 		CaptureName, InputBED, GenomeInfoJSON = Namespace.name, os.path.abspath(Namespace.bed), os.path.abspath(Namespace.genomeinfo)
 		Description = None if Namespace.description is None else str(Namespace.description)
 		CapturePreparation(CaptureName = CaptureName, InputBED = InputBED, GenomeInfoJSON = GenomeInfoJSON, Description = Description)
+	elif Namespace.command == "Contigs":
+		FastaPath = os.path.abspath(Namespace.fasta)
+		ListContigs(FastaPath = FastaPath)
+	elif Namespace.command == "RestrictionSites":
+		ListRS()
+	elif Namespace.command == "AddRS":
+		AddRS(Namespace.name, Namespace.regexp)
+	elif Namespace.command == "RemoveRS":
+		RemoveRS(Namespace.name)
 	else: Parser.print_help()
 
 if __name__ == '__main__': main()
