@@ -1,5 +1,5 @@
 __scriptname__ = 'exoclasma-index'
-__version__ = '0.9.1'
+__version__ = '0.9.2'
 __bugtracker__ = 'https://github.com/regnveig/exoclasma-index/issues'
 
 from Bio import SeqIO #
@@ -182,6 +182,16 @@ def CapturePreparation(CaptureName, InputBED, GenomeInfoJSON, Description):
 	os.remove(TempPurified)
 	logging.info('Job finished')
 
+def ListContigs(FastaPath):
+	logging.info(f'{__scriptname__} List {__version__}')
+	FullFastaPath = os.path.realpath(FastaPath)
+	Fasta = SeqIO.parse(Open(FullFastaPath), 'fasta')
+	logging.info(f'FASTA opened: {FullFastaPath}')
+	Result = list()
+	for Contig in Fasta: Result.append(str(Contig.id))
+	logging.info(f'Contigs: {json.dumps(Result)}')
+	logging.info('Job finished')
+
 def CreateParser():
 	Parser = argparse.ArgumentParser(
 		formatter_class = argparse.RawDescriptionHelpFormatter,
@@ -202,6 +212,9 @@ def CreateParser():
 	PrepareCaptureParser.add_argument('-n', '--name', required = True, type = str, help = f'Name of capture. Will be used as folder name and files prefix')
 	PrepareCaptureParser.add_argument('-g', '--genomeinfo', required = True, type = str, help = f'GenomeInfo JSON file. See "exoclasma-index Reference --help" for details')
 	PrepareCaptureParser.add_argument('-d', '--description', default = None, help = f'Capture description. Optional.')
+	# ListContigs
+	ListContigsParser = Subparsers.add_parser('List', help = f'List FASTA contigs.')
+	ListContigsParser.add_argument('-f', '--fasta', required = True, type = str, help = f'Raw FASTA file. May be gzipped or bzipped')
 	return Parser
 
 def main():
@@ -217,6 +230,9 @@ def main():
 		CaptureName, InputBED, GenomeInfoJSON = Namespace.name, os.path.abspath(Namespace.bed), os.path.abspath(Namespace.genomeinfo)
 		Description = None if Namespace.description is None else str(Namespace.description)
 		CapturePreparation(CaptureName = CaptureName, InputBED = InputBED, GenomeInfoJSON = GenomeInfoJSON, Description = Description)
+	elif Namespace.command == "List":
+		FastaPath = os.path.abspath(Namespace.fasta)
+		ListContigs(FastaPath = FastaPath)
 	else: Parser.print_help()
 
 if __name__ == '__main__': main()
