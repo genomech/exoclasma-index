@@ -1,5 +1,5 @@
 __scriptname__ = 'exoclasma-index'
-__version__ = '0.9.3'
+__version__ = '0.9.4'
 __bugtracker__ = 'https://github.com/regnveig/exoclasma-index/issues'
 
 from Bio import SeqIO #
@@ -78,11 +78,12 @@ def CreateGenomeInfo(GenomeName, RestrictionEnzymes, Description = None, BuildGa
 	}
 	return ConfigJson
 
-def RefseqPreparation(GenomeName, FastaPath, ParentDir, Description, BuildGatkIndex):
+def RefseqPreparation(GenomeName, FastaPath, ParentDir, Description, BuildGatkIndex, ContigJSON):
 	logging.info(f'{__scriptname__} Reference {__version__}')
 	# Config
 	ConfigPath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
 	Config = json.load(open(ConfigPath, 'rt'))
+	if ContigJSON is not None: ContigList = json.loads(ContigJSON)
 	# Output Dir
 	OutputDir = os.path.realpath(os.path.join(ParentDir, GenomeName))
 	RSDir = os.path.realpath(os.path.join(OutputDir, 'juicer.rs'))
@@ -99,8 +100,23 @@ def RefseqPreparation(GenomeName, FastaPath, ParentDir, Description, BuildGatkIn
 	OutputFasta = os.path.join(OutputDir, GenomeInfo['fasta'])
 	ChromSizesPath = os.path.join(OutputDir, GenomeInfo['chrom.sizes'])
 	BedPath = os.path.join(OutputDir, GenomeInfo['bed'])
-	with open(OutputFasta, 'w') as NewFasta, open(ChromSizesPath, 'w') as ChromSizes, open(BedPath, 'w') as BedFile:
+	# Sort & filter
+	if ContigJSON is not None:
+		if len(set(ContigList)) < len(ContigList):
+			logging.error(f'Some contigs from list are duplicated')
+			exit(1)
+		Contigs = { contig: None for contig in ContigList}
 		for Contig in Fasta:
+			if Contig.name in Contigs: Contigs[Contig.name] = Contig
+		ContigsNotExist = [Item for Item in Contigs if (Contigs[Item] is None)]
+		if ContigsNotExist:
+			logging.error(f'Some contigs from list not exist: {json.dumps(ContigsNotExist)}')
+			exit(1)
+	else:
+		Contigs = {}
+		for Contig in Fasta: Contigs[Contig.name] = Contig
+	with open(OutputFasta, 'w') as NewFasta, open(ChromSizesPath, 'w') as ChromSizes, open(BedPath, 'w') as BedFile:
+		for Contig in Contigs.values():
 			Contig.name = re.sub('[^\w\.]', '_', Contig.name)
 			Seq = Contig.seq.__str__()
 			SeqLength = len(Seq)
@@ -242,6 +258,7 @@ def CreateParser():
 	PrepareReferenceParser.add_argument('-f', '--fasta', required = True, type = str, help = f'Raw FASTA file. May be gzipped or bzipped')
 	PrepareReferenceParser.add_argument('-n', '--name', required = True, type = str, help = f'Name of reference assembly. Will be used as folder name and files prefix')
 	PrepareReferenceParser.add_argument('-p', '--parent', required = True, type = str, help = f'Parent dir where reference folder will be created')
+	PrepareReferenceParser.add_argument('-c', '--contigs', required = True, type = str, help = f'List of contigs to keep. Plain JSON array')
 	PrepareReferenceParser.add_argument('-d', '--description', default = None, help = f'Reference description. Optional')
 	PrepareReferenceParser.add_argument('-g', '--no-gatk', action = 'store_true', help = f'Do not build GATK dictionary')
 	# PrepareCapture
@@ -271,8 +288,9 @@ def main():
 	if Namespace.command == "Reference":
 		CheckDependencies(CheckGatk = (not Namespace.no_gatk))
 		FastaPath, GenomeName, ParentDir = os.path.abspath(Namespace.fasta), Namespace.name, os.path.abspath(Namespace.parent)
+		ContigJSON = str(Namespace.contigs)
 		Description = None if Namespace.description is None else str(Namespace.description)
-		RefseqPreparation(FastaPath = FastaPath, GenomeName = GenomeName, ParentDir = ParentDir, Description = Description, BuildGatkIndex = (not Namespace.no_gatk))
+		RefseqPreparation(FastaPath = FastaPath, GenomeName = GenomeName, ParentDir = ParentDir, Description = Description, BuildGatkIndex = (not Namespace.no_gatk), ContigJSON = ContigJSON)
 	elif Namespace.command == "Capture":
 		CheckDependencies(CheckGatk = False)
 		CaptureName, InputBED, GenomeInfoJSON = Namespace.name, os.path.abspath(Namespace.bed), os.path.abspath(Namespace.genomeinfo)
